@@ -15,7 +15,7 @@ env:
 
 jobs:
   # ==============================
-  # 1) TEST
+  # 1) TEST (Mongo + RabbitMQ)
   # ==============================
   test:
     name: Unit Tests (Mongo + RabbitMQ)
@@ -143,7 +143,7 @@ jobs:
     runs-on: self-hosted
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      IMAGE_TAG: latest  # hoặc dùng ${GITHUB_SHA} cho commit chính xác
+      IMAGE_TAG: latest
     steps:
       - name: Check Docker environment
         shell: cmd
