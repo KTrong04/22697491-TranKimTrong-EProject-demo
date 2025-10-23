@@ -49,20 +49,21 @@ jobs:
         working-directory: ./auth
         run: npm ci
 
-      - name: 🕒 Wait for MongoDB
+      - name: 🕒 Wait for MongoDB & RabbitMQ
         run: |
+          echo "⌛ Waiting for MongoDB & RabbitMQ..."
           for i in {1..30}; do
-            echo "⌛ Waiting for MongoDB to be ready... ($i)"
-            nc -z localhost 27017 && echo "✅ MongoDB is ready!" && break
+            nc -z mongo 27017 && nc -z rabbitmq 5672 && echo "✅ MongoDB & RabbitMQ ready!" && break
+            echo "⌛ Waiting... ($i)"
             sleep 2
           done
 
       - name: 🧪 Run Auth tests
         working-directory: ./auth
         env:
-          MONGODB_AUTH_URI: mongodb://localhost:27017/ep_auth_db
+          MONGODB_AUTH_URI: mongodb://mongo:27017/ep_auth_db
           JWT_SECRET: 11042004
-          RABBITMQ_URI: amqp://localhost
+          RABBITMQ_URI: amqp://rabbitmq
         run: |
           echo "🚀 Running tests for Auth Service"
           npm test -- --timeout 60000 --exit
@@ -125,15 +126,23 @@ jobs:
             sleep 2
           done
 
+      - name: 🕒 Wait for MongoDB & RabbitMQ
+        run: |
+          echo "⌛ Waiting for MongoDB & RabbitMQ..."
+          for i in {1..30}; do
+            nc -z mongo 27017 && nc -z rabbitmq 5672 && echo "✅ MongoDB & RabbitMQ ready!" && break
+            echo "⌛ Waiting... ($i)"
+            sleep 2
+          done
+
       - name: 🧪 Run Product tests
         working-directory: ./product
         env:
           MONGODB_PRODUCT_URI: mongodb://mongo:27017/ep_product_db
           JWT_SECRET: 11042004
-          RABBITMQ_URI: amqp://rabbitmq     
+          RABBITMQ_URI: amqp://rabbitmq
           LOGIN_TEST_USER: testuser
           LOGIN_TEST_PASSWORD: testpassword
-
         run: |
           echo "🚀 Running tests for Product Service"
           npm test -- --timeout 30000 --exit
