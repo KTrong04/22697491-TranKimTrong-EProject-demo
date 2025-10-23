@@ -112,6 +112,8 @@ jobs:
           MONGODB_PRODUCT_URI: mongodb://localhost:27017/ep_product_db
           JWT_SECRET: 11042004
           RABBITMQ_URI: amqp://localhost
+          LOGIN_TEST_USER: testuser
+          LOGIN_TEST_PASSWORD: testpassword
         run: |
           echo "🚀 Running tests for Product Service"
           npm test -- --timeout 30000 --exit
