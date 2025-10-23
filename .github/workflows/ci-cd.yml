@@ -28,6 +28,7 @@ jobs:
         image: rabbitmq:3-management
         ports:
           - 5672:5672
+          - 15672:15672
         options: >-
           --health-cmd="rabbitmq-diagnostics -q ping"
           --health-interval=5s
@@ -50,25 +51,21 @@ jobs:
 
       - name: 🕒 Wait for MongoDB
         run: |
-          for i in {1..15}; do
-            if mongosh --host mongo --eval "db.runCommand({ ping: 1 })" > /dev/null 2>&1; then
-              echo "✅ MongoDB is ready!"
-              break
-            fi
+          for i in {1..30}; do
             echo "⌛ Waiting for MongoDB to be ready... ($i)"
-            sleep 3
+            nc -z localhost 27017 && echo "✅ MongoDB is ready!" && break
+            sleep 2
           done
 
       - name: 🧪 Run Auth tests
         working-directory: ./auth
         env:
-          MONGODB_AUTH_URI: mongodb://mongo:27017/ep_auth_db
+          MONGODB_AUTH_URI: mongodb://localhost:27017/ep_auth_db
           JWT_SECRET: 11042004
-          RABBITMQ_URI: amqp://rabbitmq
+          RABBITMQ_URI: amqp://localhost
         run: |
           echo "🚀 Running tests for Auth Service"
           npm test -- --timeout 60000 --exit
-
 
   # ======================================================================
   # 🧪 TEST PRODUCT SERVICE (runs AFTER AUTH)
@@ -76,7 +73,7 @@ jobs:
   test_product:
     name: 🧪 Test Product Service
     runs-on: ubuntu-latest
-    needs: [test_auth] # 👈 chạy sau test_auth
+    needs: [test_auth]
 
     services:
       mongo:
@@ -92,6 +89,7 @@ jobs:
         image: rabbitmq:3-management
         ports:
           - 5672:5672
+          - 15672:15672
         options: >-
           --health-cmd="rabbitmq-diagnostics -q ping"
           --health-interval=5s
@@ -118,29 +116,29 @@ jobs:
           cd auth
           nohup npm start > /dev/null 2>&1 &
           echo "⏳ Waiting for Auth service to be ready..."
-          for i in {1..20}; do
-            if curl -s http://localhost:3000/health > /dev/null; then
+          for i in {1..30}; do
+            if nc -z localhost 3000; then
               echo "✅ Auth service is ready!"
               break
             fi
             echo "⌛ Waiting... ($i)"
-            sleep 3
+            sleep 2
           done
 
       - name: 🧪 Run Product tests
         working-directory: ./product
         env:
-          MONGODB_PRODUCT_URI: mongodb://mongo:27017/ep_product_db
+          MONGODB_PRODUCT_URI: mongodb://localhost:27017/ep_product_db
           JWT_SECRET: 11042004
-          RABBITMQ_URI: amqp://rabbitmq
+          RABBITMQ_URI: amqp://localhost
           LOGIN_TEST_USER: testuser
-          LOGIN_TEST_PASSWORD: testpassword
+          LOGIN_TEST_PASSWORD: password
         run: |
           echo "🚀 Running tests for Product Service"
           npm test -- --timeout 30000 --exit
 
   # ======================================================================
-  # 🐳 BUILD & PUSH STAGE (runs after both tests)
+  # 🐳 BUILD & PUSH DOCKER IMAGES
   # ======================================================================
   build_and_push:
     name: 🐳 Build & Push Docker Images
@@ -160,7 +158,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 🧱 Generate environment files
+      - name: 🧱 Generate .env files
         run: |
           mkdir -p auth product order api-gateway
           echo "MONGODB_AUTH_URI=mongodb://mongo:27017/ep_auth_db" > auth/.env
