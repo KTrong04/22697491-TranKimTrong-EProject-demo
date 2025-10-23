@@ -48,6 +48,17 @@ jobs:
         working-directory: ./auth
         run: npm ci
 
+      - name: 🕒 Wait for MongoDB
+        run: |
+          for i in {1..15}; do
+            if mongosh --host mongo --eval "db.runCommand({ ping: 1 })" > /dev/null 2>&1; then
+              echo "✅ MongoDB is ready!"
+              break
+            fi
+            echo "⌛ Waiting for MongoDB to be ready... ($i)"
+            sleep 3
+          done
+
       - name: 🧪 Run Auth tests
         working-directory: ./auth
         env:
@@ -56,7 +67,8 @@ jobs:
           RABBITMQ_URI: amqp://rabbitmq
         run: |
           echo "🚀 Running tests for Auth Service"
-          npm test -- --timeout 30000 --exit
+          npm test -- --timeout 60000 --exit
+
 
   # ======================================================================
   # 🧪 TEST PRODUCT SERVICE (runs AFTER AUTH)
