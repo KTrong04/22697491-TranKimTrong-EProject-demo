@@ -1,78 +1,185 @@
-name: CI/CD Pipeline - Microservices Project
+name: CI/CD Pipeline (Docker-linked)
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: [ main ]
+
+permissions:
+  contents: read
+  packages: write
+  
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+  IMAGE_TAG_SHA: sha-${{ github.sha }}
+  # nếu có semver trong tag Git, bạn có thể thay bằng github.ref_name khi push tag
 
 jobs:
-  build_and_push:
+  # ==============================
+  # 1) TEST (giữ như hiện tại)
+  # ==============================
+  test:
+    name: Unit Tests (Mongo local)
     runs-on: ubuntu-latest
-
     services:
       mongo:
         image: mongo:6
-        ports:
-          - 27017:27017
+        ports: [ "27017:27017" ]
+        options: >-
+          --health-cmd="mongosh --eval 'db.runCommand({ ping: 1 })' || exit 1"
+          --health-interval=5s --health-timeout=5s --health-retries=20
       rabbitmq:
         image: rabbitmq:3-management
-        ports:
-          - 5672:5672
-          - 15672:15672
+        ports: [ "5672:5672", "15672:15672" ]
+        options: >-
+          --health-cmd="rabbitmq-diagnostics -q ping"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '18' }
+
+      - name: Create .env for services
+        run: |
+          mkdir -p auth product
+          cat > auth/.env << 'EOF'
+          MONGODB_AUTH_URI=mongodb://127.0.0.1:27017/auth_test
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          EOF
+          cat > product/.env << 'EOF'
+          MONGODB_PRODUCT_URI=mongodb://127.0.0.1:27017/product_test
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          RABBITMQ_URL=amqp://127.0.0.1:5672
+          EOF
+
+      - name: Install & Test (auth)
+        working-directory: ./auth
+        env: { NODE_ENV: test }
+        run: |
+          npm ci
+          npm i -D chai@4.3.10 chai-http@4.4.0 mocha@10.3.0
+          npm test
+
+      - name: Start auth server (background)
+        working-directory: ./auth
+        env: { NODE_ENV: test }
+        run: |
+          nohup npm start >/tmp/auth.log 2>&1 &
+          timeout 60 bash -c 'until echo > /dev/tcp/127.0.0.1/3000; do sleep 1; done'
+          echo "Auth is up"
+
+      - name: Install & Test (product)
+        working-directory: ./product
+        env:
+          NODE_ENV: test
+          LOGIN_TEST_USER: ${{ secrets.LOGIN_TEST_USER }}
+          LOGIN_TEST_PASSWORD: ${{ secrets.LOGIN_TEST_PASSWORD }}
+        run: |
+          npm ci
+          npm i -D chai@4.3.10 chai-http@4.4.0 mocha@10.3.0
+          npm test
+
+  # ===========================================
+  # 2) BUILD + (OPTIONAL SCAN) + PUSH DOCKER
+  # ===========================================
+  build-and-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      matrix:
+        service: [api-gateway, auth, product, order]
 
     steps:
-      - name: 🧩 Checkout source code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: ⚙️ Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: 🔑 Login to Docker Hub
+      - name: Docker login
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 🧾 Tạo các file .env tạm để docker-compose không bị lỗi
-      - name: 🧱 Create temporary .env files
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Tạo metadata (tags + labels) cho từng service
+      - name: Docker metadata ${{ matrix.service }}
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}
+          tags: |
+            type=raw,value=latest
+            # type=raw,value=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.run_id }}
+
+      - name: Build & Push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          file: ./${{ matrix.service }}/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================
+  # 3) DEPLOY (Windows self-hosted) dùng SHA TAG
+  # ===========================================
+  deploy:
+    name: Deploy on Localhost (Windows Runner)
+    needs: build-and-push
+    runs-on: self-hosted
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      IMAGE_TAG: latest # ${{ github.sha }}   # dùng tag theo sha
+    steps:
+      - name: Check Docker environment
+        shell: cmd
         run: |
-          mkdir -p auth product order api-gateway
-          echo "PORT=3000" > auth/.env
-          echo "PORT=3001" > product/.env
-          echo "PORT=3002" > order/.env
-          echo "PORT=3003" > api-gateway/.env
-          echo "MONGO_URI=mongodb://mongo:27017/microservices" | tee -a auth/.env product/.env order/.env api-gateway/.env > /dev/null
-          echo "RABBITMQ_URL=amqp://rabbitmq:5672" | tee -a auth/.env product/.env order/.env api-gateway/.env > /dev/null
-      - name: 🐳 Build and push Auth service
-        uses: docker/build-push-action@v6
+          docker --version
+          docker compose version
+
+      - name: Docker login
+        uses: docker/login-action@v3
         with:
-          context: ./auth
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/auth-service:latest
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 🐳 Build and push Product service
-        uses: docker/build-push-action@v6
-        with:
-          context: ./product
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/product-service:latest
+      - name: Stop and remove old containers
+        shell: cmd
+        run: |
+          cd /d "D:\HK\HK7\Lap-trinh-huong-dich-vu\Bai-Tap-TH\Lab07\demo-2\EProject-Phase-1"
+          docker compose down --remove-orphans || exit /b 0
 
-      - name: 🐳 Build and push Order service
-        uses: docker/build-push-action@v6
-        with:
-          context: ./order
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-service:latest
+      - name: Pull images with SHA tag
+        shell: cmd
+        run: |
+          docker pull %DOCKERHUB_USERNAME%/api-gateway:%IMAGE_TAG%
+          docker pull %DOCKERHUB_USERNAME%/auth:%IMAGE_TAG%
+          docker pull %DOCKERHUB_USERNAME%/product:%IMAGE_TAG%
+          docker pull %DOCKERHUB_USERNAME%/order:%IMAGE_TAG%
 
-      - name: 🐳 Build and push API Gateway
-        uses: docker/build-push-action@v6
-        with:
-          context: ./api-gateway
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/api-gateway:latest
+      - name: Generate .env for compose (IMAGE_TAG)
+        shell: cmd
+        run: |
+          cd /d "D:\HK\HK7\Lap-trinh-huong-dich-vu\Bai-Tap-TH\Lab07\demo-2\EProject-Phase-1"
+          > .env (
+            echo DOCKERHUB_USERNAME=%DOCKERHUB_USERNAME%
+            echo IMAGE_TAG=%IMAGE_TAG%
+          )
 
 
-      # ✅ Test docker-compose build (chỉ kiểm tra, không run)
-      - name: ✅ Test docker-compose configuration
-        run: docker compose -f docker-compose.yml config
+      - name: Up with docker compose (use SHA tag)
+        shell: cmd
+        run: |
+          cd /d "D:\HK\HK7\Lap-trinh-huong-dich-vu\Bai-Tap-TH\Lab07\demo-2\EProject-Phase-1"
+          docker compose up -d --remove-orphans --force-recreate
+          docker ps
