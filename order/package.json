@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node -r dotenv/config node_modules/mocha/bin/mocha --timeout 20000 src/test/**/*.test.js --exit",
     "start": "node index.js"
   },
   "keywords": [],

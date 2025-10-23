@@ -52,7 +52,7 @@ jobs:
           cat > product/.env << 'EOF'
           MONGODB_PRODUCT_URI=mongodb://127.0.0.1:27017/product_test
           JWT_SECRET=${{ secrets.JWT_SECRET }}
-          RABBITMQ_URL=amqp://127.0.0.1:5672
+          RABBITMQ_URI=amqp://127.0.0.1:5672
           EOF
 
       - name: Install & Test (auth)
